@@ -2182,14 +2182,55 @@ expr_ref seq_rewriter::re_predicate(expr* cond, sort* seq_sort) {
 }
 
 expr_ref seq_rewriter::is_nullable(expr* r) {
+    STRACE("seq_verbose", tout << "is_nullable: "
+                               << mk_pp(r, m()) << std::endl;);
     expr_ref result(m_op_cache.find(_OP_RE_IS_NULLABLE, r, nullptr), m());
     if (!result) {
         result = is_nullable_rec(r);
-        m_op_cache.insert(_OP_RE_IS_NULLABLE, r, nullptr, result);        
+        m_op_cache.insert(_OP_RE_IS_NULLABLE, r, nullptr, result);
     }
+    STRACE("seq_verbose", tout << "is_nullable result: "
+                               << mk_pp(result, m()) << std::endl;);
     return result;
 }
 
+void seq_rewriter::mk_nullable_not(expr* a1, expr_ref& result) {
+    expr *s1 = nullptr, *r1 = nullptr;
+    if (str().is_in_re(a1, s1, r1)) {
+        SASSERT(str().is_empty(s1));
+        result = re().mk_complement(r1);
+        result = re().mk_in_re(s1, result);
+    }
+    else {
+        m_br.mk_not(a1, result);
+    }
+}
+void seq_rewriter::mk_nullable_and(expr* a1, expr* a2, expr_ref& result) {
+    expr *s1 = nullptr, *s2 = nullptr, *r1 = nullptr, *r2 = nullptr;
+    if (str().is_in_re(a1, s1, r1) &&
+        str().is_in_re(a2, s2, r2)) {
+        SASSERT(str().is_empty(s1));
+        SASSERT(str().is_empty(s2));
+        result = re().mk_inter(r1, r2);
+        result = re().mk_in_re(s1, result);
+    }
+    else {
+        m_br.mk_and(a1, a2, result);
+    }
+}
+void seq_rewriter::mk_nullable_or(expr* a1, expr* a2, expr_ref& result) {
+    expr *s1 = nullptr, *s2 = nullptr, *r1 = nullptr, *r2 = nullptr;
+    if (str().is_in_re(a1, s1, r1) &&
+        str().is_in_re(a2, s2, r2)) {
+        SASSERT(str().is_empty(s1));
+        SASSERT(str().is_empty(s2));
+        result = re().mk_union(r1, r2);
+        result = re().mk_in_re(s1, result);
+    }
+    else {
+        m_br.mk_or(a1, a2, result);
+    }
+}
 expr_ref seq_rewriter::is_nullable_rec(expr* r) {
     SASSERT(m_util.is_re(r) || m_util.is_seq(r));
     expr* r1 = nullptr, *r2 = nullptr, *cond = nullptr;
@@ -2198,15 +2239,15 @@ expr_ref seq_rewriter::is_nullable_rec(expr* r) {
     zstring s1;
     expr_ref result(m());
     if (re().is_concat(r, r1, r2) ||
-        re().is_intersection(r, r1, r2)) { 
-        m_br.mk_and(is_nullable(r1), is_nullable(r2), result);
+        re().is_intersection(r, r1, r2)) {
+        mk_nullable_and(is_nullable(r1), is_nullable(r2), result);
     }
     else if (re().is_union(r, r1, r2)) {
-        m_br.mk_or(is_nullable(r1), is_nullable(r2), result);
+        mk_nullable_or(is_nullable(r1), is_nullable(r2), result);
     }
     else if (re().is_diff(r, r1, r2)) {
-        m_br.mk_not(is_nullable(r2), result);
-        m_br.mk_and(result, is_nullable(r1), result);
+        mk_nullable_not(is_nullable(r2), result);
+        mk_nullable_and(result, is_nullable(r1), result);
     }
     else if (re().is_star(r) || 
         re().is_opt(r) ||
@@ -2228,7 +2269,7 @@ expr_ref seq_rewriter::is_nullable_rec(expr* r) {
         result = is_nullable(r1);
     }
     else if (re().is_complement(r, r1)) {
-        m_br.mk_not(is_nullable(r1), result);
+        mk_nullable_not(is_nullable(r1), result);
     }
     else if (re().is_to_re(r, r1)) {        
         result = is_nullable(r1);
@@ -2365,11 +2406,15 @@ br_status seq_rewriter::mk_re_derivative(expr* ele, expr* r, expr_ref& result) {
         Duplicate nested conditions are eliminated.
 */
 expr_ref seq_rewriter::mk_derivative(expr* ele, expr* r) {
+    STRACE("seq_verbose", tout << "derivative: " << mk_pp(ele, m())
+                               << "," << mk_pp(r, m()) << std::endl;);
     expr_ref result(m_op_cache.find(OP_RE_DERIVATIVE, ele, r), m());
     if (!result) {
         result = mk_derivative_rec(ele, r);
         m_op_cache.insert(OP_RE_DERIVATIVE, ele, r, result);
     }
+    STRACE("seq_verbose", tout << "derivative result: "
+                               << mk_pp(result, m()) << std::endl;);
     return result;
 }
 
@@ -2404,18 +2449,21 @@ expr_ref seq_rewriter::mk_der_op_rec(decl_kind k, expr* a, expr* b) {
     };
     if (m().is_ite(a, ca, a1, a2)) {
         if (m().is_ite(b, cb, b1, b2)) {
+            // --- Core logic for combining two BDDs
             if (ca == cb) {
                 expr_ref r1 = mk_der_op(k, a1, b1);
                 expr_ref r2 = mk_der_op(k, a2, b2);
                 result = mk_ite(ca, r1, r2);
                 return result;
             }
+            // Order with higher IDs on the outside
             else if (ca->get_id() < cb->get_id()) {
                 expr_ref r1 = mk_der_op(k, a, b1);
                 expr_ref r2 = mk_der_op(k, a, b2);
                 result = mk_ite(cb, r1, r2);
                 return result;
             }
+            // --- End core logic
         }
         expr_ref r1 = mk_der_op(k, a1, b);
         expr_ref r2 = mk_der_op(k, a2, b);
@@ -2573,8 +2621,8 @@ expr_ref seq_rewriter::mk_derivative_rec(expr* ele, expr* r) {
         else if (str().is_empty(r1)) {
             return mk_empty();
         }
-        else {
 #if 0
+        else {
             hd = str().mk_nth_i(r1, m_autil.mk_int(0));
             tl = str().mk_substr(r1, m_autil.mk_int(1), m_autil.mk_sub(str().mk_length(r1), m_autil.mk_int(1)));
             result = 
@@ -2582,10 +2630,8 @@ expr_ref seq_rewriter::mk_derivative_rec(expr* ele, expr* r) {
                            mk_empty(),
                            re_and(m_br.mk_eq_rw(ele, hd), re().mk_to_re(tl)));
             return result;
-#else
-            return expr_ref(re().mk_derivative(ele, r), m());
-#endif
         }
+#endif
     }
     else if (re().is_reverse(r, r1) && re().is_to_re(r1, r2)) {
         // Reverses are rewritten so that the only derivative case is
@@ -2597,9 +2643,6 @@ expr_ref seq_rewriter::mk_derivative_rec(expr* ele, expr* r) {
         }
         else if (str().is_empty(r2)) {
             return mk_empty();
-        }
-        else {
-            return expr_ref(re().mk_derivative(ele, r), m());
         }
     }
     else if (re().is_range(r, r1, r2)) {
@@ -2631,8 +2674,10 @@ expr_ref seq_rewriter::mk_derivative_rec(expr* ele, expr* r) {
         result = array.mk_select(2, args);
         return re_predicate(result, seq_sort);
     }
-    // stuck cases: re().is_derivative, variable, ...
-    // and re().is_reverse if the reverse is not applied to a string
+    // stuck cases: re.derivative, variable,
+    // str.to_re if the head of the string can't be obtained,
+    // and re.reverse if not applied to a string or if the tail char
+    // of the string can't be obtained
     return expr_ref(re().mk_derivative(ele, r), m());
 }
 
@@ -2798,6 +2843,9 @@ Disabled rewrite:
    It is disabled because the solver doesn't handle disjunctions of regexes well.
 */
 br_status seq_rewriter::mk_str_in_regexp(expr* a, expr* b, expr_ref& result) {
+
+    STRACE("seq_verbose", tout << "mk_str_in_regexp: " << mk_pp(a, m())
+                               << ", " << mk_pp(b, m()) << std::endl;);
 
     if (re().is_empty(b)) {
         result = m().mk_false();
@@ -4086,6 +4134,11 @@ seq_rewriter::op_cache::op_cache(ast_manager& m):
 expr* seq_rewriter::op_cache::find(decl_kind op, expr* a, expr* b) {
     op_entry e(op, a, b, nullptr);
     m_table.find(e, e);
+
+    #ifdef _TRACE
+    (e.r) ? (cache_hits++) : (cache_misses++) ;
+    #endif
+
     return e.r;
 }
 
@@ -4103,3 +4156,27 @@ void seq_rewriter::op_cache::cleanup() {
         m_table.reset();
     }
 }
+
+#ifdef _TRACE
+unsigned seq_rewriter::op_cache::cache_hits = 0;
+unsigned seq_rewriter::op_cache::cache_misses = 0;
+
+void seq_rewriter::trace_and_reset_cache_counts() {
+    unsigned hits = m_op_cache.cache_hits;
+    unsigned misses = m_op_cache.cache_misses;
+    // Suppress tracing of "0/0 hits" or "1/1 hits"
+    if (hits >= 2 || misses >= 1) {
+        STRACE("seq_regex",
+            tout << "Op cache hits: " << hits
+                 << " (out of " << (hits + misses)
+                 << ")" << std::endl;
+        );
+        STRACE("seq_regex_brief",
+            tout << "(" << hits << "/" << (hits + misses)
+                 << " hits) ";
+        );
+    }
+    m_op_cache.cache_hits = 0;
+    m_op_cache.cache_misses = 0;
+}
+#endif
